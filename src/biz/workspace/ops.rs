@@ -637,6 +637,35 @@ pub async fn get_workspace_document_total_bytes(
   })
 }
 
+/// Self-hosted deployments have no billing service, so there is no real
+/// subscription plan or quota to report. Return actual usage counts alongside
+/// unlimited limits, rather than leaving this endpoint unimplemented.
+pub async fn get_workspace_usage_and_limit(
+  pg_pool: &PgPool,
+  workspace_id: &Uuid,
+) -> Result<shared_entity::dto::billing_dto::WorkspaceUsageAndLimit, AppError> {
+  let member_count = select_workspace_member_count_from_workspace_id(pg_pool, workspace_id)
+    .await?
+    .unwrap_or(0);
+  let storage_bytes = select_workspace_total_collab_bytes(pg_pool, workspace_id).await?;
+
+  Ok(shared_entity::dto::billing_dto::WorkspaceUsageAndLimit {
+    member_count,
+    member_count_limit: i64::MAX,
+    storage_bytes,
+    storage_bytes_limit: 0,
+    storage_bytes_unlimited: true,
+    single_upload_limit: 0,
+    single_upload_unlimited: true,
+    ai_responses_count: 0,
+    ai_responses_count_limit: 0,
+    ai_image_responses_count: 0,
+    ai_image_responses_count_limit: 0,
+    local_ai: true,
+    ai_responses_unlimited: true,
+  })
+}
+
 pub async fn get_workspace_settings(
   pg_pool: &PgPool,
   workspace_id: &Uuid,

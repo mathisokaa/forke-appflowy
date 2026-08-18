@@ -297,7 +297,12 @@ services:
 
   appflowy_web:
     restart: on-failure
-    image: appflowyinc/appflowy_web:${APPFLOWY_WEB_VERSION:-latest}
+    # Built from the vendored, patched source in ./appflowy-web instead of the
+    # prebuilt appflowyinc/appflowy_web image, so the upgrade/paywall UI
+    # removed in that source (see src/utils/subscription.ts) actually ships.
+    build:
+      context: ./appflowy-web
+      dockerfile: docker/Dockerfile
     depends_on:
       appflowy_cloud:
         condition: service_healthy

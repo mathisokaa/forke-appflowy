@@ -1,0 +1,244 @@
+import { Suspense, useCallback, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
+
+import { usePublishContext } from '@/application/publish';
+import { UIVariant, ViewLayout, YjsDatabaseKey, YjsEditorKey } from '@/application/types';
+import { resolveActiveDatabaseViewId } from '@/application/view-utils';
+import type {
+  AppendBreadcrumb,
+  CreateRow,
+  LoadRowDocument,
+  LoadView,
+  LoadViewMeta,
+  RowId,
+  View,
+  ViewMetaProps,
+  YDatabase,
+  YDoc,
+} from '@/application/types';
+import ComponentLoading from '@/components/_shared/progress/ComponentLoading';
+import CalendarSkeleton from '@/components/_shared/skeleton/CalendarSkeleton';
+import DocumentSkeleton from '@/components/_shared/skeleton/DocumentSkeleton';
+import GridSkeleton from '@/components/_shared/skeleton/GridSkeleton';
+import KanbanSkeleton from '@/components/_shared/skeleton/KanbanSkeleton';
+import { Database } from '@/components/database';
+import { useContainerVisibleViewIds } from '@/components/database/hooks/visibleViewIds/useContainerVisibleViewIds';
+import { findParentView, findView } from '@/components/_shared/outline/utils';
+import { cn } from '@/lib/utils';
+
+import ViewMetaPreview from 'src/components/view-meta/ViewMetaPreview';
+
+export interface DatabaseProps {
+  workspaceId: string;
+  doc: YDoc;
+  initialRowMap?: Record<RowId, YDoc>;
+  createRow?: CreateRow;
+  loadView?: LoadView;
+  /**
+   * Load a row sub-document from published cache.
+   */
+  loadRowDocument?: LoadRowDocument;
+  navigateToView?: (viewId: string, blockId?: string) => Promise<void>;
+  loadViewMeta?: LoadViewMeta;
+  viewMeta: ViewMetaProps;
+  appendBreadcrumb?: AppendBreadcrumb;
+  onRendered?: () => void;
+  getViewIdFromDatabaseId?: (databaseId: string) => Promise<string | null>;
+  variant?: UIVariant;
+}
+
+function DatabaseView({ viewMeta, navigateToView, ...props }: DatabaseProps) {
+  const [search, setSearch] = useSearchParams();
+
+  const isTemplateThumb = usePublishContext()?.isTemplateThumb;
+  const outline = usePublishContext()?.outline;
+  const outlineView = useMemo(() => {
+    if (!outline || !viewMeta.viewId) return;
+    return findView(outline, viewMeta.viewId) || undefined;
+  }, [outline, viewMeta.viewId]);
+  const { containerView } = useContainerVisibleViewIds({
+    view: outlineView,
+    outline,
+    parentViewId: viewMeta.parentViewId,
+    databaseId: viewMeta.extra?.database_id,
+    embedded: viewMeta.extra?.embedded,
+  });
+  const pageView = containerView || outlineView;
+  const pageMeta = useMemo<ViewMetaProps>(() => {
+    if (!pageView) return viewMeta;
+
+    return {
+      ...viewMeta,
+      viewId: pageView.view_id,
+      name: pageView.name,
+      icon: pageView.icon || undefined,
+      extra: pageView.extra,
+      cover: pageView.extra?.cover,
+      layout: pageView.layout,
+    };
+  }, [pageView, viewMeta]);
+  const visibleViewIds = useMemo(() => {
+    if (viewMeta.visibleViewIds?.length) return viewMeta.visibleViewIds;
+    return containerView?.children.map((child) => child.view_id) || [];
+  }, [containerView, viewMeta.visibleViewIds]);
+
+  // Build a loadViewMeta that returns the database container from the outline
+  // with correct folder names for all sibling views (used by DatabaseTabs).
+  const publishLoadViewMeta: LoadViewMeta | undefined = useMemo(() => {
+    if (!outline || !props.loadViewMeta) return props.loadViewMeta;
+
+    const originalLoadViewMeta = props.loadViewMeta;
+
+    return async (viewId: string, callback?: (meta: View | null) => void) => {
+      // Try to find the container in the outline for this database view
+      const parent = findParentView(outline, viewId);
+      const resolvedContainer = containerView?.view_id === viewId ? containerView : parent;
+
+      if (resolvedContainer?.extra?.is_database_container && resolvedContainer.children?.length > 0) {
+        const containerMeta: View = {
+          ...resolvedContainer,
+          is_published: false,
+          is_private: false,
+        };
+
+        callback?.(containerMeta);
+        return containerMeta;
+      }
+
+      // Fall back to original loadViewMeta
+      return originalLoadViewMeta(viewId, callback);
+    };
+  }, [containerView, outline, props.loadViewMeta]);
+
+  /**
+   * The database's page ID in the folder/outline structure.
+   * This is the main entry point for the database and remains constant.
+   */
+  const databasePageId = containerView?.view_id || viewMeta.viewId;
+
+  const doc = props.doc;
+  const database = doc?.getMap(YjsEditorKey.data_section)?.get(YjsEditorKey.database) as YDatabase;
+
+  // View ids that actually exist in the database collab. Published pages may
+  // list the folder container id among visibleViewIds even though it is not a
+  // database view; resolution below must never land on such an id.
+  const existingViewIds = useMemo(() => {
+    const views = database?.get(YjsDatabaseKey.views);
+
+    return views ? Array.from(views.keys()) : [];
+  }, [database]);
+  const tabViewId = search.get('v');
+
+  /**
+   * The currently active/selected view tab ID (Grid, Board, or Calendar).
+   * Comes from URL param 'v', defaults to the route id for direct child-view
+   * routes, or the first visible child when the route points at a database
+   * container.
+   */
+  const activeViewId = useMemo(() => {
+    return resolveActiveDatabaseViewId({
+      databasePageId,
+      tabViewId,
+      visibleViewIds,
+      existingViewIds,
+    });
+  }, [databasePageId, existingViewIds, tabViewId, visibleViewIds]);
+
+  const handleChangeView = useCallback(
+    (viewId: string) => {
+      setSearch((prev) => {
+        prev.set('v', viewId);
+        return prev;
+      });
+    },
+    [setSearch]
+  );
+
+  // Wrap navigateToView to handle sibling database views as tab switches
+  // instead of navigating to a new page.
+  const publishNavigateToView = useCallback(
+    async (viewId: string, blockId?: string) => {
+      if (visibleViewIds.includes(viewId)) {
+        // Set both v and r params in a single setSearch call to avoid a
+        // React Router race where back-to-back setSearch calls overwrite
+        // each other's params.
+        setSearch((prev) => {
+          prev.set('v', viewId);
+          if (blockId) {
+            prev.set('r', blockId);
+          }
+
+          return prev;
+        });
+        return;
+      }
+
+      return navigateToView?.(viewId, blockId);
+    },
+    [visibleViewIds, navigateToView, setSearch]
+  );
+
+  const handleNavigateToRow = useCallback(
+    (rowId: string) => {
+      setSearch((prev) => {
+        prev.set('r', rowId);
+        return prev;
+      });
+    },
+    [setSearch]
+  );
+
+  const rowId = search.get('r') || undefined;
+  const isPublishVariant = props.variant === UIVariant.Publish;
+
+  const skeleton = useMemo(() => {
+    if (rowId) {
+      return <DocumentSkeleton />;
+    }
+
+    switch (viewMeta.layout) {
+      case ViewLayout.Grid:
+      case ViewLayout.List:
+      case ViewLayout.Gallery:
+        return <GridSkeleton includeTitle={false} />;
+      case ViewLayout.Board:
+        return <KanbanSkeleton includeTitle={false} />;
+      case ViewLayout.Calendar:
+        return <CalendarSkeleton includeTitle={false} />;
+      default:
+        return <ComponentLoading />;
+    }
+  }, [rowId, viewMeta.layout]);
+
+  if (!activeViewId || !database) return null;
+
+  return (
+    <div
+      style={{
+        minHeight: 'calc(100vh - 48px)',
+        maxWidth: isTemplateThumb ? '964px' : undefined,
+      }}
+      className={cn('relative flex w-full flex-col', !isPublishVariant && 'h-full')}
+    >
+      {rowId ? null : <ViewMetaPreview {...pageMeta} readOnly={true} />}
+
+      <Suspense fallback={skeleton}>
+        <Database
+          databaseName={pageMeta.name || ''}
+          databasePageId={databasePageId || ''}
+          {...props}
+          loadViewMeta={publishLoadViewMeta}
+          navigateToView={publishNavigateToView}
+          activeViewId={activeViewId}
+          rowId={rowId}
+          visibleViewIds={visibleViewIds}
+          onChangeView={handleChangeView}
+          onOpenRowPage={handleNavigateToRow}
+          showActions={false}
+        />
+      </Suspense>
+    </div>
+  );
+}
+
+export default DatabaseView;
