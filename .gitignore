@@ -10,7 +10,7 @@ package-lock.json
 yarn.lock
 node_modules
 **/libs/AppFlowy-Collab/
-data/
+/data/
 .env
 .logs
 flake.nix
