@@ -17,6 +17,12 @@ RUN corepack enable && \
 # Copy source code
 COPY . .
 
+# Raise V8's heap ceiling for the build step: on constrained/virtualized
+# hosts Node's auto-detected default can be well under what's actually
+# available, and this bundle (mermaid, katex, database views, etc.) needs
+# more than that default to complete without "JavaScript heap out of memory".
+ENV NODE_OPTIONS=--max-old-space-size=4096
+
 # Build the application
 RUN pnpm run build
 
