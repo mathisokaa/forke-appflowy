@@ -203,6 +203,10 @@ pub fn workspace_scope() -> Scope {
     )
     .service(web::resource("/{workspace_id}/space").route(web::post().to(post_space_handler)))
     .service(
+      web::resource("/{workspace_id}/v2/space")
+        .route(web::post().to(post_space_with_initial_page_handler)),
+    )
+    .service(
       web::resource("/{workspace_id}/space/{view_id}").route(web::patch().to(update_space_handler)),
     )
     .service(
@@ -367,6 +371,9 @@ pub fn workspace_scope() -> Scope {
     )
     .service(
       web::resource("/{workspace_id}/folder").route(web::get().to(get_workspace_folder_handler)),
+    )
+    .service(
+      web::resource("/{workspace_id}/view/{view_id}").route(web::get().to(get_view_handler)),
     )
     .service(web::resource("/{workspace_id}/recent").route(web::get().to(get_recent_views_handler)))
     .service(
@@ -1403,6 +1410,44 @@ async fn post_space_handler(
   )
   .await?;
   Ok(Json(AppResponse::Ok().with_data(space)))
+}
+
+async fn post_space_with_initial_page_handler(
+  user_uuid: UserUuid,
+  path: web::Path<Uuid>,
+  payload: Json<CreateSpaceWithInitialPageParams>,
+  state: Data<AppState>,
+  req: HttpRequest,
+) -> Result<Json<AppResponse<CreateSpaceWithInitialPageResponse>>> {
+  let uid = state.user_cache.get_user_uid(&user_uuid).await?;
+  let workspace_uuid = path.into_inner();
+  let user = realtime_user_for_web_request(req.headers(), uid)?;
+  let space = create_space(
+    &state,
+    user.clone(),
+    workspace_uuid,
+    &payload.space_permission,
+    &payload.name,
+    &payload.space_icon,
+    &payload.space_icon_color,
+    payload.view_id,
+  )
+  .await?;
+  let page = create_page(
+    &state,
+    user,
+    workspace_uuid,
+    &space.view_id,
+    &payload.initial_page.layout,
+    payload.initial_page.name.as_deref(),
+    payload.initial_page.page_data.as_ref(),
+    payload.initial_page.view_id,
+    None,
+  )
+  .await?;
+  Ok(Json(
+    AppResponse::Ok().with_data(CreateSpaceWithInitialPageResponse { space, page }),
+  ))
 }
 
 async fn update_space_handler(
@@ -2504,6 +2549,29 @@ async fn get_workspace_folder_handler(
     &root_view_id,
   )
   .await?;
+  Ok(Json(AppResponse::Ok().with_data(folder_view)))
+}
+
+async fn get_view_handler(
+  user_uuid: UserUuid,
+  path: web::Path<(Uuid, Uuid)>,
+  query: web::Query<QueryWorkspaceFolder>,
+  state: Data<AppState>,
+  req: HttpRequest,
+) -> Result<Json<AppResponse<FolderView>>> {
+  let (workspace_id, view_id) = path.into_inner();
+  let depth = query.depth.unwrap_or(1);
+  let uid = state.user_cache.get_user_uid(&user_uuid).await?;
+  let user = realtime_user_for_web_request(req.headers(), uid)?;
+  // Mirrors get_workspace_folder_handler's access check: AppFlowy Web does not
+  // support the guest editor yet, so the caller must be at least a workspace member.
+  state
+    .workspace_access_control
+    .enforce_role_weak(&uid, &workspace_id, AFRole::Member)
+    .await?;
+  let folder_view =
+    biz::collab::ops::get_user_workspace_structure(&state, user, workspace_id, depth, &view_id)
+      .await?;
   Ok(Json(AppResponse::Ok().with_data(folder_view)))
 }
 
