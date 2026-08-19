@@ -205,6 +205,30 @@ pub struct CreatePageParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateSpaceInitialPageParams {
+  pub layout: ViewLayout,
+  pub name: Option<String>,
+  pub page_data: Option<serde_json::Value>,
+  pub view_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateSpaceWithInitialPageParams {
+  pub space_permission: SpacePermission,
+  pub name: String,
+  pub space_icon: String,
+  pub space_icon_color: String,
+  pub view_id: Option<Uuid>,
+  pub initial_page: CreateSpaceInitialPageParams,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateSpaceWithInitialPageResponse {
+  pub space: Space,
+  pub page: Page,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateOrphanedViewParams {
   pub document_id: Uuid,
 }
